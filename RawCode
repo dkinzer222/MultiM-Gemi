@@ -1,0 +1,242 @@
+** @jsxImportSource https://esm.sh/react */
+import React, { useState, useEffect, useRef, Component, ErrorInfo } from "https://esm.sh/react";
+import { createRoot } from "https://esm.sh/react-dom/client";
+
+const AI_ASSISTANTS = [
+  // ... existing AI_ASSISTANTS array remains unchanged
+];
+
+// Custom ErrorBoundary implementation
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { 
+      hasError: false,
+      error: null,
+      errorInfo: null 
+    };
+  }
+
+  static getDerivedStateFromError(error) {
+    // Update state so the next render will show the fallback UI.
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // You can also log the error to an error reporting service
+    console.error("Uncaught error:", error, errorInfo);
+    this.setState({ 
+      error: error,
+      errorInfo: errorInfo 
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      // You can render any custom fallback UI
+      return (
+        <div style={{
+          padding: '20px',
+          backgroundColor: '#f8d7da',
+          color: '#721c24',
+          border: '1px solid #f5c6cb',
+          borderRadius: '5px'
+        }}>
+          <h1>🚨 Something went wrong.</h1>
+          <details style={{ whiteSpace: 'pre-wrap' }}>
+            {this.state.error && this.state.error.toString()}
+            <br />
+            {this.state.errorInfo && this.state.errorInfo.componentStack}
+          </details>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+class AIProviderManager {
+  constructor() {
+    this.openai = null;
+    this.gemini = null;
+    this.geminiModels = [
+      { name: "gemini-pro", type: "text" },
+      { name: "gemini-pro-vision", type: "multimodal" },
+      { name: "gemini-ultra", type: "advanced" },
+      { name: "gemini-nano", type: "lightweight" }
+    ];
+  }
+
+  async initializeOpenAI() {
+    if (!this.openai) {
+      const { OpenAI } = await import("https://esm.town/v/std/openai");
+      this.openai = new OpenAI();
+    }
+  }
+
+  async initializeGemini() {
+    if (!this.gemini) {
+      const { GoogleGenerativeAI } = await import("https://esm.sh/@google/generative-ai");
+      const apiKey = Deno.env.get('GEMINI_API_KEY');
+      this.gemini = new GoogleGenerativeAI(apiKey);
+    }
+  }
+
+  async processMultiModelQuery(messages, options = { 
+    mode: 'parallel', 
+    maxModels: 4, 
+    maxTokens: 350 
+  }) {
+    await this.initializeGemini();
+
+    const modelPromises = this.geminiModels
+      .slice(0, options.maxModels)
+      .map(async (modelConfig) => {
+        try {
+          const model = this.gemini.getGenerativeModel({ 
+            model: modelConfig.name 
+          });
+
+          const geminiMessages = messages.map(msg => 
+            msg.role === 'user' ? msg.content : 
+            msg.role === 'system' ? `[SYSTEM INSTRUCTION] ${msg.content}` : 
+            ''
+          ).join('\n');
+
+          const result = await model.generateContent(geminiMessages);
+          return {
+            model: modelConfig.name,
+            type: modelConfig.type,
+            response: result.response.text(),
+            success: true
+          };
+        } catch (error) {
+          console.error(`Error with ${modelConfig.name}:`, error);
+          return {
+            model: modelConfig.name,
+            type: modelConfig.type,
+            response: null,
+            success: false
+          };
+        }
+      });
+
+    const results = await Promise.allSettled(modelPromises);
+
+    // Process results based on mode
+    switch(options.mode) {
+      case 'parallel':
+        return results
+          .filter(result => result.status === 'fulfilled' && result.value.success)
+          .map(result => result.value);
+      
+      case 'fallback':
+        const successfulResult = results.find(result => 
+          result.status === 'fulfilled' && result.value.success
+        );
+        return successfulResult 
+          ? [successfulResult.value] 
+          : [{ 
+              model: 'Error', 
+              type: 'fallback', 
+              response: 'No models could process the query',
+              success: false 
+            }];
+      
+      default:
+        return results
+          .filter(result => result.status === 'fulfilled' && result.value.success)
+          .map(result => result.value);
+    }
+  }
+
+  async processWithFallback(messages, maxTokens = 350) {
+    try {
+      // First, try OpenAI
+      await this.initializeOpenAI();
+      
+      const openaiResponse = await this.openai.chat.completions.create({
+        messages: messages,
+        model: "gpt-4o-mini",
+        max_tokens: maxTokens
+      });
+
+      const openaiContent = openaiResponse.choices[0]?.message?.content;
+      if (openaiContent) return openaiContent;
+
+      // If OpenAI fails, use multi-model Gemini processing
+      const geminiResults = await this.processMultiModelQuery(messages, {
+        mode: 'fallback',
+        maxModels: 4,
+        maxTokens
+      });
+
+      return geminiResults[0]?.response || 
+        "I couldn't generate a response from any AI model.";
+
+    } catch (error) {
+      console.error("Multi-Model AI Processing Error:", error);
+      return "Sorry, I'm experiencing technical difficulties with AI models.";
+    }
+  }
+}
+
+/**
+ * The main App component is rendered on the client.
+ * No server-side-specific code should be included in the App.
+ * Use fetch to communicate with the backend server portion.
+ */
+function App() {
+  return (
+    <ErrorBoundary>
+      <div>
+        <h1>Multi-Model AI Assistant</h1>
+        {/* Existing app content */}
+      </div>
+    </ErrorBoundary>
+  );
+}
+
+/**
+ * Client-only code
+ * Any code that makes use of document or window should be scoped to the `client()` function.
+ * This val should not cause errors when imported as a module in a browser.
+ */
+function client() {
+  createRoot(document.getElementById("root")).render(<App />);
+}
+if (typeof document !== "undefined") { client(); }
+
+/**
+ * Server-only code
+ * Any code that is meant to run on the server should be included in the server function.
+ * This can include endpoints that the client side component can send fetch requests to.
+ */
+export default async function server(request: Request): Promise<Response> {
+  return new Response(`
+    <html>
+      <head>
+        <title>Multi-Model AI Assistant</title>
+        <style>${css}</style>
+      </head>
+      <body>
+        <div id="root"></div>
+        <script src="https://esm.town/v/std/catch"></script>
+        <script type="module" src="${import.meta.url}"></script>
+      </body>
+    </html>
+  `,
+  {
+    headers: {
+      "content-type": "text/html",
+    },
+  });
+}
+
+const css = `
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+`;
